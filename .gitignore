@@ -2,3 +2,7 @@
 /micrograd_dbg
 a.out
 *.o
+project/build/
+project/.venv/
+__pycache__/
+*:Zone.Identifier

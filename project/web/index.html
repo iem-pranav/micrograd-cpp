@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>micrograd: C++ vs Python</title>
+  <meta name="description" content="Watch a tiny neural network learn a decision boundary, trained by a C++ port of Karpathy's micrograd, and benchmark it against the same training in pure Python.">
+  <!-- Inline SVG favicon (a circle, half blue / half orange), so there is no favicon request. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='8' fill='%23e69f00'/%3E%3Cpath d='M8 0a8 8 0 0 0 0 16z' fill='%230072b2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>micrograd: C++ vs Python</h1>
+    <p class="sub">A tiny neural network learns to separate two classes of points. The C++ engine trains it
+      and the plot shows the decision boundary as it learns. The benchmark runs the same training in pure Python.</p>
+  </header>
+  <!-- Sticky, so messages stay visible after pressing a button further down the page. -->
+  <div class="status-bar">
+    <p id="status" class="status" role="status" aria-live="polite">Loading limits from the server…</p>
+  </div>
+
+  <main class="layout">
+    <section class="col" aria-label="Data and training">
+
+      <div class="card">
+        <div class="card-head">
+          <h2 id="plot-title">Decision boundary</h2>
+          <div class="legend" aria-label="Legend">
+            <span><i class="dot dot-pos"></i>class +1</span>
+            <span><i class="dot dot-neg"></i>class −1</span>
+            <span class="ramp-wrap"><span class="ramp" aria-hidden="true"></span><span class="ramp-label">prediction −1 · 0 · +1</span></span>
+          </div>
+        </div>
+        <div class="plot-wrap">
+          <canvas id="plot" role="img" aria-labelledby="plot-title" aria-describedby="plot-help"></canvas>
+        </div>
+        <p id="plot-help" class="hint">Click the plot to add a point of the selected class; Shift-click adds the other class.</p>
+
+        <div class="toolbar">
+          <button id="train" class="primary" type="button" disabled>Train</button>
+          <button id="play" type="button" disabled aria-label="Play">Play</button>
+          <button id="restart" type="button" disabled>Restart</button>
+          <label class="scrub-label" for="scrub">Frame</label>
+          <input id="scrub" type="range" min="0" max="0" value="0" disabled>
+        </div>
+        <p id="readout" class="readout">Not trained yet: press Train and the background will show what the network predicts.</p>
+      </div>
+
+      <div class="card">
+        <h2>Data</h2>
+        <div class="grid-form">
+          <label for="preset">Preset</label>
+          <select id="preset">
+            <option value="moons">Moons</option>
+            <option value="circles">Circles</option>
+            <option value="xor">XOR</option>
+          </select>
+
+          <label for="npoints">Points</label>
+          <input id="npoints" type="number" min="2" step="1">
+
+          <label for="noise">Noise <output id="noise-out" for="noise"></output></label>
+          <input id="noise" type="range" min="0" max="0.5" step="0.01" value="0.1">
+
+          <label for="dseed">Data seed</label>
+          <input id="dseed" type="number" min="0" step="1" value="1">
+        </div>
+
+        <fieldset class="classes">
+          <legend>Click adds class</legend>
+          <label><input type="radio" name="cls" value="1" checked> <i class="dot dot-pos"></i>+1</label>
+          <label><input type="radio" name="cls" value="-1"> <i class="dot dot-neg"></i>−1</label>
+        </fieldset>
+
+        <div class="toolbar">
+          <button id="generate" type="button">Regenerate</button>
+          <button id="undo" type="button" disabled>Undo</button>
+          <button id="clear" type="button">Clear</button>
+          <span id="count" class="muted"></span>
+        </div>
+
+        <details class="csv">
+          <summary>CSV import / export</summary>
+          <label for="csv-text">Paste CSV: one <code>x,y,label</code> per line, x and y in [−2, 2], label 0/1 or −1/1</label>
+          <textarea id="csv-text" rows="5" spellcheck="false" placeholder="x,y,label&#10;0.5,1.2,1&#10;-0.8,-0.3,0"></textarea>
+          <div class="toolbar">
+            <button id="csv-load" type="button">Load pasted CSV</button>
+            <label class="file-btn" for="csv-file">Open file…</label>
+            <input id="csv-file" type="file" accept=".csv,text/csv,text/plain">
+            <button id="csv-export" type="button">Export CSV</button>
+          </div>
+          <p class="hint">Example: <code>project/data/moons_sample.csv</code> in the repo (60 points).</p>
+        </details>
+      </div>
+
+      <div class="card">
+        <h2>Training settings</h2>
+        <div class="grid-form">
+          <label for="hidden">Hidden layers</label>
+          <input id="hidden" type="text" inputmode="numeric" autocomplete="off" aria-describedby="hidden-help">
+
+          <label for="activation">Activation</label>
+          <select id="activation">
+            <option value="tanh">tanh</option>
+            <option value="relu">relu</option>
+            <option value="sigmoid">sigmoid</option>
+          </select>
+
+          <label for="lr">Learning rate</label>
+          <input id="lr" type="number" step="0.01" aria-describedby="lr-help">
+
+          <label for="epochs">Epochs</label>
+          <input id="epochs" type="number" min="1" step="1">
+
+          <label for="seed">Weights seed</label>
+          <div class="inline">
+            <input id="seed" type="number" min="0" step="1" value="1">
+            <button id="reinit" type="button" disabled>Re-initialize</button>
+          </div>
+        </div>
+        <p id="hidden-help" class="hint">Neurons per hidden layer, comma separated (e.g. <code>8,8</code>). The output layer (1 neuron) is added for you.</p>
+        <p id="lr-help" class="hint">Per data point. Re-initialize picks new random starting weights and trains again; relu sometimes starts “dead” (a flat output) and never learns.</p>
+      </div>
+    </section>
+
+    <section class="col" aria-label="Results">
+      <div class="card">
+        <div class="card-head">
+          <h2 id="loss-title">Loss</h2>
+          <label class="check"><input id="logscale" type="checkbox" checked> log scale</label>
+        </div>
+        <div class="loss-wrap">
+          <canvas id="loss" role="img" aria-labelledby="loss-title"></canvas>
+        </div>
+        <p id="final" class="readout">The loss curve appears after you press Train.</p>
+      </div>
+
+      <div class="card" aria-labelledby="bench-title">
+        <h2 id="bench-title">Benchmark: C++ vs Python</h2>
+        <p class="hint">Runs the same training (same data, starting weights, epochs and learning rate) in both
+          implementations, a few times each, one after the other.</p>
+        <div class="toolbar">
+          <button id="bench" class="primary" type="button" disabled>Benchmark</button>
+          <span id="spinner" class="spinner" hidden aria-hidden="true"></span>
+          <span id="estimate" class="muted"></span>
+        </div>
+        <p id="bench-empty" class="empty">No benchmark yet. Press Benchmark to time C++ and Python on the current data and settings.</p>
+        <div id="bench-result" class="bench-result" hidden>
+          <div class="bar-row">
+            <span class="bar-name">C++</span>
+            <div class="bar-track"><div id="bar-cpp" class="bar bar-cpp"></div></div>
+            <span id="time-cpp" class="bar-time"></span>
+          </div>
+          <div class="bar-row">
+            <span class="bar-name">Python</span>
+            <div class="bar-track"><div id="bar-py" class="bar bar-py"></div></div>
+            <span id="time-py" class="bar-time"></span>
+          </div>
+          <p class="bench-summary"><strong id="speedup"></strong> <span id="match" class="badge"></span></p>
+          <p id="bench-acc" class="muted"></p>
+          <p id="runs" class="muted small"></p>
+          <p id="machine" class="muted small"></p>
+        </div>
+        <p class="note">Times are measured on the machine running the server, not on your device.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    Based on Andrej Karpathy's <a href="https://github.com/karpathy/micrograd">micrograd</a> ·
+    source: <a href="https://github.com/iem-pranav/micrograd-cpp">github.com/iem-pranav/micrograd-cpp</a>
+  </footer>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
