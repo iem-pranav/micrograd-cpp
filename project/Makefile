@@ -60,9 +60,13 @@ test: $(BUILD)/micrograd_cli $(BUILD)/self_test venv
 	echo "*** (install node >= 18 to run tests/data.test.js)               ***"; \
 	echo "********************************************************************"; fi
 
-# Serves the API and web/ on http://127.0.0.1:8000 (localhost only).
+# Serves the API and web/ on http://127.0.0.1:8000 (localhost only by default).
+# `make run HOST=0.0.0.0 PORT=8080` changes it; the container sets these itself.
+HOST ?= 127.0.0.1
+PORT ?= 8000
+
 run: $(BUILD)/micrograd_cli venv
-	$(PY) -m uvicorn server:app --app-dir python --host 127.0.0.1 --port 8000
+	$(PY) -m uvicorn server:app --app-dir python --host $(HOST) --port $(PORT)
 
 # Both CLIs on a few fixed configs, no server; prints a Markdown table.
 bench: $(BUILD)/micrograd_cli venv

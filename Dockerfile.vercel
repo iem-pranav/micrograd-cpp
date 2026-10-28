@@ -1,0 +1,29 @@
+# Container image for the hosted demo. Vercel builds this file and runs it as a function
+# (see "Deployment" in CLAUDE.md). The build context is the repo root, filtered by .vercelignore.
+FROM python:3.14-slim
+
+# g++ and make build the C++ CLI; g++ also stays so /api/benchmark can report its version.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends g++ make \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/project
+
+# Runtime packages only, at the versions pinned in requirements.txt (pytest and httpx are test-only).
+COPY project/requirements.txt ./
+RUN grep -E '^(fastapi|uvicorn|pydantic)==' requirements.txt > /tmp/runtime-requirements.txt \
+ && pip install --no-cache-dir -r /tmp/runtime-requirements.txt
+
+COPY project/ ./
+RUN rm -rf build && make cpp
+
+# A tiny training request: the CLI exits non-zero if it cannot train.
+ENV CHECK_REQUEST='{"activation":"tanh","layers":[2,2,1],"epochs":2,"lr":0.1,"seed":1,"snapshot_every":0,"data":[[0.5,0.5,1],[-0.5,-0.5,-1]]}'
+# Build-time check: fail the image build if the binary does not run here.
+RUN echo "$CHECK_REQUEST" | ./build/micrograd_cli
+
+ENV HOST=0.0.0.0 PORT=80 PYTHONUNBUFFERED=1
+EXPOSE 80
+
+# Startup check again in the running container, then the server (exec, so it receives SIGTERM).
+CMD ["sh", "-c", "echo \"$CHECK_REQUEST\" | ./build/micrograd_cli > /dev/null && echo 'startup check: C++ CLI ok' && exec python -m uvicorn server:app --app-dir python --host \"$HOST\" --port \"$PORT\""]

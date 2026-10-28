@@ -400,7 +400,9 @@
     const r = await api('/api/train', MG.buildTrainBody(points, s.settings, grid));
     setBusy(false);
     if (!r.ok) {
-      setStatus(r.status === 409 ? 'Busy: ' + r.error + '.' : 'Training failed: ' + r.error + '.', true);
+      if (r.status === 409) setStatus('Busy: ' + r.error + '.', true);
+      else if (r.status === 429) setStatus('Slow down: ' + r.error + '.', true);
+      else setStatus('Training failed: ' + r.error + '.', true);
       return;
     }
 
@@ -448,6 +450,7 @@
 
     if (!r.ok) {
       if (r.status === 409) setStatus('Another benchmark or training run is in progress: ' + r.error + '.', true);
+      else if (r.status === 429) setStatus('Slow down: ' + r.error + '.', true);
       else setStatus('Benchmark failed: ' + r.error + '.', true);
       return;
     }

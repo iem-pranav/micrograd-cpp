@@ -3,7 +3,7 @@
 Runs the two CLIs (build/micrograd_cli and python/cli.py) as subprocesses on identical
 JSON input, and serves the frontend from web/. See CLAUDE.md for the protocol.
 
-Run from project/:  make run   (binds to 127.0.0.1:8000)
+Run from project/:  make run   (binds to 127.0.0.1:8000; HOST=... PORT=... to change)
 """
 
 import functools
@@ -16,6 +16,7 @@ import statistics
 import subprocess
 import sys
 import threading
+import time
 from typing import List, Literal, Optional
 
 from fastapi import FastAPI, Request
@@ -59,12 +60,23 @@ BENCH_RUNS = 3
 MAX_BENCH_RUNS = 5
 PY_REPEAT_LIMIT_S = 5   # if one Python run takes longer than this, do not repeat it
 
+# --- Per-client cooldown (a small abuse guard for the hosted demo) ---
+# One POST /api/train per TRAIN_COOLDOWN_S and one POST /api/benchmark per BENCH_COOLDOWN_S
+# for each client IP. In memory, so it is per server process and resets on restart.
+TRAIN_COOLDOWN_S = 2
+BENCH_COOLDOWN_S = 15
+COOLDOWN_MAX_CLIENTS = 10000   # forget old entries once this many clients are remembered
+
 # Suggested UI settings: about 2.4 s per Python run.
 DEFAULTS = {'points': 60, 'hidden': [8], 'activation': 'tanh', 'lr': LR_DEFAULT,
             'epochs': 120, 'grid': 30}
 
 # One subprocess job at a time: a benchmark must never share the CPU with another run.
 run_lock = threading.Lock()
+
+# (endpoint, client ip) -> time.monotonic() of the last accepted request
+last_request = {}
+cooldown_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -188,8 +200,47 @@ def run_cli(cmd, req, timeout):
     return out
 
 
-def error(status, message, **extra):
-    return JSONResponse(status_code=status, content={'ok': False, 'error': message, **extra})
+def error(status, message, headers=None, **extra):
+    return JSONResponse(status_code=status, content={'ok': False, 'error': message, **extra},
+                        headers=headers)
+
+
+def client_ip(request):
+    """The first address in X-Forwarded-For (set by a proxy such as Vercel's), else the socket peer."""
+    forwarded = request.headers.get('x-forwarded-for', '')
+    first = forwarded.split(',')[0].strip()
+    if first:
+        return first
+    return request.client.host if request.client else 'unknown'
+
+
+def cooldown_error(request, endpoint, seconds):
+    """None if this client may run now (and records the time), else a 429 response."""
+    now = time.monotonic()
+    key = (endpoint, client_ip(request))
+    with cooldown_lock:
+        last = last_request.get(key)
+        if last is not None and now - last < seconds:
+            wait = max(1, math.ceil(seconds - (now - last)))
+            return error(429, f'please wait {wait} s before the next {endpoint} '
+                              f'(one every {seconds} s per visitor)',
+                         headers={'Retry-After': str(wait)}, retry_after_s=wait)
+        if len(last_request) >= COOLDOWN_MAX_CLIENTS:
+            oldest_allowed = now - max(TRAIN_COOLDOWN_S, BENCH_COOLDOWN_S)
+            for k in [k for k, t in last_request.items() if t < oldest_allowed]:
+                del last_request[k]
+        last_request[key] = now
+    return None
+
+
+def budget_error(body):
+    """A 422 response if Python would take longer than PY_BUDGET_S on this request, else None."""
+    est = est_python_seconds(len(body.data), body.epochs, param_count(layer_sizes(body)))
+    if est > PY_BUDGET_S:
+        return error(422, f'this would take Python about {est:.0f} s (limit {PY_BUDGET_S} s): '
+                          'use fewer points, epochs or neurons',
+                     est_python_seconds=est, py_budget_s=PY_BUDGET_S)
+    return None
 
 
 @functools.lru_cache(maxsize=1)
@@ -260,13 +311,17 @@ def limits():
         'lr_default': LR_DEFAULT, 'lr_max': LR_MAX,
         'py_seconds_per_unit': PY_SECONDS_PER_UNIT, 'py_budget_s': PY_BUDGET_S,
         'bench_runs': BENCH_RUNS, 'max_bench_runs': MAX_BENCH_RUNS,
+        'train_cooldown_s': TRAIN_COOLDOWN_S, 'bench_cooldown_s': BENCH_COOLDOWN_S,
         'defaults': DEFAULTS,
     }
 
 
 @app.post('/api/train')
-def train(body: TrainRequest):
+def train(body: TrainRequest, request: Request):
     """C++ only, with frames for the animation."""
+    rejected = cooldown_error(request, 'training run', TRAIN_COOLDOWN_S)
+    if rejected:
+        return rejected
     req = cli_request(body, snapshot_every_for(body.epochs), body.grid)
     if not run_lock.acquire(blocking=False):
         return error(409, 'the server is busy with another run, try again in a moment')
@@ -295,14 +350,23 @@ def summarize(runs):
 
 
 @app.post('/api/benchmark')
-def benchmark(body: BenchmarkRequest):
-    """Run C++ and then Python (never at the same time) on identical input."""
+def benchmark_endpoint(body: BenchmarkRequest, request: Request):
+    # The budget check comes first, so a request refused for its size does not use up the cooldown.
+    rejected = budget_error(body) or cooldown_error(request, 'benchmark', BENCH_COOLDOWN_S)
+    if rejected:
+        return rejected
+    return benchmark(body)
+
+
+def benchmark(body):
+    """Run C++ and then Python (never at the same time) on identical input.
+
+    Also called directly by bench.py (`make bench`), so the budget check lives here too."""
+    rejected = budget_error(body)
+    if rejected:
+        return rejected
     layers = layer_sizes(body)
     est = est_python_seconds(len(body.data), body.epochs, param_count(layers))
-    if est > PY_BUDGET_S:
-        return error(422, f'this would take Python about {est:.0f} s (limit {PY_BUDGET_S} s): '
-                          'use fewer points, epochs or neurons',
-                     est_python_seconds=est, py_budget_s=PY_BUDGET_S)
 
     req = cli_request(body, snapshot_every=0)
     if not run_lock.acquire(blocking=False):
@@ -363,4 +427,5 @@ app.mount('/', StaticFiles(directory=WEB_DIR, html=True), name='web')
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host='127.0.0.1', port=8000)
+    # Localhost only unless HOST says otherwise (the container sets HOST=0.0.0.0).
+    uvicorn.run(app, host=os.environ.get('HOST', '127.0.0.1'), port=int(os.environ.get('PORT', '8000')))

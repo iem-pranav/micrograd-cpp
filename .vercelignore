@@ -1,0 +1,11 @@
+# Upload only what Dockerfile.vercel needs: the Dockerfile and project/ (minus local build files).
+/*
+!/Dockerfile.vercel
+!/project
+
+project/.venv
+project/build
+project/.pytest_cache
+**/__pycache__
+**/*.pyc
+**/*:Zone.Identifier

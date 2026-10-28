@@ -17,6 +17,14 @@ from bench import make_moons  # noqa: E402
 client = TestClient(server.app)
 
 
+@pytest.fixture(autouse=True)
+def no_cooldown(monkeypatch):
+    """Most tests post several times in a row; the cooldown tests below switch it back on."""
+    monkeypatch.setattr(server, 'TRAIN_COOLDOWN_S', 0)
+    monkeypatch.setattr(server, 'BENCH_COOLDOWN_S', 0)
+    server.last_request.clear()
+
+
 def small(**kw):
     body = {'data': make_moons(40), 'hidden': [4], 'activation': 'tanh', 'epochs': 30, 'lr': 0.1}
     body.update(kw)
@@ -146,6 +154,48 @@ def test_busy_server_returns_409():
         assert client.post('/api/benchmark', json=small()).status_code == 409
     finally:
         server.run_lock.release()
+
+
+def test_limits_expose_cooldowns(monkeypatch):
+    monkeypatch.setattr(server, 'TRAIN_COOLDOWN_S', 2)
+    monkeypatch.setattr(server, 'BENCH_COOLDOWN_S', 15)
+    lim = client.get('/api/limits').json()
+    assert lim['train_cooldown_s'] == 2 and lim['bench_cooldown_s'] == 15
+
+
+def test_train_cooldown_per_ip(monkeypatch):
+    monkeypatch.setattr(server, 'TRAIN_COOLDOWN_S', 2)
+    a = {'x-forwarded-for': '203.0.113.7, 10.0.0.1'}
+    assert client.post('/api/train', json=small(), headers=a).status_code == 200
+    r = client.post('/api/train', json=small(), headers=a)
+    assert r.status_code == 429
+    assert r.json()['ok'] is False and 'wait' in r.json()['error']
+    assert 1 <= int(r.headers['Retry-After']) <= 2
+    # a different client is not affected, and neither is the other endpoint
+    assert client.post('/api/train', json=small(), headers={'x-forwarded-for': '203.0.113.8'}).status_code == 200
+    assert client.post('/api/benchmark', json=small(bench_runs=1), headers=a).status_code == 200
+
+
+def test_cooldown_expires(monkeypatch):
+    monkeypatch.setattr(server, 'TRAIN_COOLDOWN_S', 2)
+    now = [1000.0]
+    monkeypatch.setattr(server.time, 'monotonic', lambda: now[0])
+    assert client.post('/api/train', json=small()).status_code == 200
+    now[0] += 1.5
+    assert client.post('/api/train', json=small()).status_code == 429
+    now[0] += 0.6
+    assert client.post('/api/train', json=small()).status_code == 200
+
+
+def test_benchmark_cooldown_and_budget_rejection_does_not_count(monkeypatch):
+    monkeypatch.setattr(server, 'BENCH_COOLDOWN_S', 15)
+    too_big = small(data=make_moons(400), hidden=[32, 32, 32, 32], epochs=2000)
+    assert client.post('/api/benchmark', json=too_big).status_code == 422
+    assert client.post('/api/benchmark', json=small(bench_runs=1)).status_code == 200
+    r = client.post('/api/benchmark', json=small(bench_runs=1))
+    assert r.status_code == 429
+    assert 14 <= int(r.headers['Retry-After']) <= 15
+    assert r.json()['retry_after_s'] == int(r.headers['Retry-After'])
 
 
 def test_missing_cpp_cli_is_a_clear_500(monkeypatch):

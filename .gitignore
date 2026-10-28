@@ -6,3 +6,5 @@ project/build/
 project/.venv/
 __pycache__/
 *:Zone.Identifier
+
+.vercel

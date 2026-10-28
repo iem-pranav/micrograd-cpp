@@ -37,6 +37,8 @@ micrograd_cpp/
   CLAUDE.md                this file
   README.md                written in Phase 4
   .gitignore
+  Dockerfile.vercel        container image for the hosted demo (see Deployment)
+  .vercelignore            what `vercel deploy` uploads: only Dockerfile.vercel and project/
   project/
     Makefile
     cpp/
@@ -70,7 +72,7 @@ micrograd_cpp/
 - `make cpp`   build `build/micrograd_cli` (`-O2`)
 - `make asan`  debug build with sanitizers, runs the C++ self-checks
 - `make test`  C++ self-checks + `pytest`
-- `make run`   start the server on `127.0.0.1:8000`
+- `make run`   start the server on `127.0.0.1:8000` (`make run HOST=... PORT=...` to change; keep localhost as the default)
 - `make bench` run the CLI benchmark without the server and print a table (used for the README)
 
 ## Architecture
@@ -234,6 +236,22 @@ If Python hits the timeout, return `"python": {"status": "timeout", "timeout_s":
 - One lock for all CLI runs; a request that finds it busy gets 409 (never two runs at once).
 - 422 for invalid or over-limit input (`{"ok": false, "error": "...", "details": [...]}`), also when training diverges.
   500 if a CLI is missing or misbehaves, 504 if C++ times out.
+- Per-client cooldown (abuse guard for the hosted demo): one `POST /api/train` per `TRAIN_COOLDOWN_S=2` and one
+  `POST /api/benchmark` per `BENCH_COOLDOWN_S=15` for each client IP (first `X-Forwarded-For` entry, else the
+  socket address). Otherwise 429 with `Retry-After` and `retry_after_s`; the UI shows the message. In memory, so
+  per server process. Over-budget benchmark requests are refused (422) before the cooldown and do not use it up.
+  Both constants are in `/api/limits`. `make bench` calls `server.benchmark` directly, so it has no cooldown.
+
+## Deployment (Vercel container function)
+
+- `Dockerfile.vercel` at the repo root: `python:3.14-slim`, apt `g++ make`, the pinned runtime packages from
+  `requirements.txt` (fastapi, uvicorn, pydantic; not pytest/httpx), `make cpp` (same flags as locally), then
+  uvicorn on `0.0.0.0:$PORT` (default 80). The CLI is run on a tiny request at build time and again at
+  container start, so a broken binary fails loudly.
+- `.vercelignore` is an allowlist: only `Dockerfile.vercel` and `project/` (without `.venv`, `build`, caches).
+- Deploy with `vercel deploy` (preview) and `vercel deploy --prod` from the repo root. The Git repo is not
+  connected and there are no domains or env vars. The container runtime is in beta on Vercel.
+- Hosted timings come from Vercel's shared vCPUs. Never put them in the README table.
 
 ## Phases
 

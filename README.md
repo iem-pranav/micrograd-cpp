@@ -6,6 +6,10 @@ You give it 2D points; the C++ engine trains a small neural network on them and 
 the decision boundary and the loss curve. A benchmark panel runs the same training in pure-Python
 micrograd and checks that both reach the same loss.
 
+**Live demo: <https://microgradcpp.vercel.app>.** It runs as a container on Vercel's shared 1-vCPU
+functions, so its benchmark times differ from the [table below](#benchmark-results), which was measured
+on the author's laptop. Each visitor can train once every 2 s and benchmark once every 15 s.
+
 ![Decision boundary part-way through training (epoch 42 of 120)](docs/boundary.png)
 
 ## Quick start
